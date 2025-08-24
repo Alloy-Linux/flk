@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -39,7 +41,6 @@ var boilerplateContent = `
 `
 
 func main() {
-
 	var file string // --file file
 
 	var rootCmd = &cobra.Command{
@@ -58,23 +59,32 @@ func main() {
 		Use:   "init",
 		Short: "Initialize a new flake",
 		Run: func(cmd *cobra.Command, args []string) {
-
-			generateFlk()
-
-			f, err := os.Create("flake.nix")
-			if err != nil {
-				log.Fatal("Could not create flake.nix:", err)
+			// determine target flake path (use --file if provided)
+			target := file
+			if target == "" {
+				target = "flake.nix"
 			}
-			defer f.Close()
 
+			// create/write flake first
+			f, err := os.Create(target)
+			if err != nil {
+				log.Fatal("Could not create", target, ":", err)
+			}
 			_, err = f.Write([]byte(boilerplateContent))
+			f.Close()
 			if err != nil {
-				log.Fatal("Could not write to flake.nix:", err)
+				log.Fatal("Could not write to", target, ":", err)
 			}
 
-			fmt.Println("Initialized new flake: flake.nix")
+			fmt.Println("Initialized new flake:", target)
 
-			filePath, err := resolveFile(file)
+			// now generate .flk artifacts from the newly created flake
+			if err := generateFlk(target); err != nil {
+				// don't fail init if shellHook isn't present; log and continue
+				log.Println("warning: could not fully generate .flk:", err)
+			}
+
+			filePath, err := resolveFile(target)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -155,13 +165,36 @@ func main() {
 		},
 	}
 
+	// `flk flake apply`
+	var applyCmd = &cobra.Command{
+		Use:   "apply",
+		Short: "Apply changes from .flk to flake.nix",
+		Run: func(cmd *cobra.Command, args []string) {
+			// gets current working directory
+			fmt.Println("Applying changes from .flk to flake.nix...")
+			wd, err := os.Getwd()
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := ensureShellHookBlock(wd + "/flake.nix"); err != nil {
+				log.Fatal(err)
+			}
+			if err := applyToFlake(wd); err != nil {
+				log.Fatal("Couldn't apply to flake:", err)
+			}
+
+		},
+	}
+
 	// Add --file flag to subcommands
 	addCmd.Flags().StringVarP(&file, "file", "f", "", "Path to flake.nix file")
 	removeCmd.Flags().StringVarP(&file, "file", "f", "", "Path to flake.nix file")
 	listCmd.Flags().StringVarP(&file, "file", "f", "", "Path to flake.nix file")
+	initCmd.Flags().StringVarP(&file, "file", "f", "", "Path to flake.nix file")
 
 	// Command tree
 	flakeCmd.AddCommand(initCmd)
+	flakeCmd.AddCommand(applyCmd)
 	packageCmd.AddCommand(addCmd, removeCmd, listCmd)
 	rootCmd.AddCommand(flakeCmd, packageCmd)
 
@@ -176,7 +209,6 @@ func resolveFile(flag string) (string, error) {
 		return flag, nil
 	}
 
-	// Check if flake.nix exists in current directory
 	defaultPath := "flake.nix"
 	if _, err := os.Stat(defaultPath); err == nil {
 		absPath, err := filepath.Abs(defaultPath)
@@ -187,4 +219,88 @@ func resolveFile(flag string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no --file given and flake.nix not found in current directory")
+}
+
+// function that makes a .flk folder and extracts shellHook from the provided flake file
+func generateFlk(flakePath string) error {
+	// read shellHook from the flake file first. If there's no shellHook or
+	// extraction fails, don't create any .flk artifacts.
+	shellHookLines, err := getLinesBetween(flakePath, "shellHook = ''", "'';")
+	if err != nil {
+		// no shellHook found or extraction error — do not create files
+		return nil
+	}
+
+	// ensure .flk exists
+	if err := os.MkdirAll(".flk", 0755); err != nil {
+		return fmt.Errorf("could not create .flk folder: %w", err)
+	}
+
+	// create/overwrite "shellhook.sh" file
+	outf, err := os.Create(".flk/shellhook.sh")
+	if err != nil {
+		return fmt.Errorf("could not create .flk/shellhook.sh: %w", err)
+	}
+	defer outf.Close()
+
+	// Write shell hook lines to .flk/shellhook.sh
+	for _, line := range shellHookLines {
+		if _, err := outf.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("could not write to .flk/shellhook.sh: %w", err)
+		}
+	}
+	return nil
+}
+
+func getLinesBetween(filePath, start, end string) ([]string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("could not open file: %w", err)
+	}
+	defer f.Close()
+
+	trimmedStart := strings.TrimSpace(start)
+	trimmedEnd := strings.TrimSpace(end)
+
+	scanner := bufio.NewScanner(f)
+	var lines []string
+	capturing := false
+
+	for scanner.Scan() {
+		raw := scanner.Text()
+		t := strings.TrimSpace(raw)
+
+		if !capturing {
+			if strings.Contains(t, trimmedStart) {
+				capturing = true
+				if idx := strings.Index(t, trimmedStart); idx != -1 {
+					rest := strings.TrimSpace(t[idx+len(trimmedStart):])
+					if rest != "" {
+						lines = append(lines, rest)
+					}
+				}
+				continue
+			}
+		} else {
+			if strings.Contains(t, trimmedEnd) {
+				if idx := strings.Index(t, trimmedEnd); idx > 0 {
+					prefix := strings.TrimSpace(t[:idx])
+					if prefix != "" {
+						lines = append(lines, prefix)
+					}
+				}
+				return lines, nil
+			}
+			// append trimmed non-empty lines
+			if t != "" {
+				lines = append(lines, t)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error scanning file: %w", err)
+	}
+
+	return nil, fmt.Errorf("end marker not found")
 }
