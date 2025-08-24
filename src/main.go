@@ -58,6 +58,9 @@ func main() {
 		Use:   "init",
 		Short: "Initialize a new flake",
 		Run: func(cmd *cobra.Command, args []string) {
+
+			generateFlk()
+
 			f, err := os.Create("flake.nix")
 			if err != nil {
 				log.Fatal("Could not create flake.nix:", err)

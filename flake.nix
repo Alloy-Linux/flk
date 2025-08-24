@@ -20,7 +20,7 @@
               alias build='mkdir -p build && cd build && go build -o flk ../src && cd ..'
               alias run='mkdir -p build && cd build && go build -o flk .. && ./flk; cd ..'
               alias flk='./build/flk'
-              alias test='cd ~/Documents/flk/ && build && cd test'
+              alias test='cd "$(git rev-parse --show-toplevel)" && build && cd test'
               echo "Development environment loaded"
             '';
           };
