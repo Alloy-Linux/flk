@@ -68,20 +68,16 @@ func main() {
 			// create/write flake first
 			f, err := os.Create(target)
 			if err != nil {
-				log.Fatal("Could not create", target, ":", err)
+				log.Fatal(err)
 			}
 			_, err = f.Write([]byte(boilerplateContent))
 			f.Close()
 			if err != nil {
-				log.Fatal("Could not write to", target, ":", err)
+				log.Fatal(err)
 			}
 
-			fmt.Println("Initialized new flake:", target)
-
-			// now generate .flk artifacts from the newly created flake
 			if err := generateFlk(target); err != nil {
-				// don't fail init if shellHook isn't present; log and continue
-				log.Println("warning: could not fully generate .flk:", err)
+				log.Println(err)
 			}
 
 			filePath, err := resolveFile(target)
@@ -89,7 +85,6 @@ func main() {
 				log.Fatal(err)
 			}
 			generateInputs(filePath)
-			fmt.Println("Done")
 		},
 	}
 
@@ -113,12 +108,10 @@ func main() {
 			err = addPackage(filePath, pkg)
 
 			if err != nil {
-				log.Fatal("Error adding package:", err)
-				fmt.Println("Retrying...")
+				log.Fatal(err)
 			}
 
 			generateInputs(filePath)
-			fmt.Println("Done")
 		},
 	}
 
@@ -136,7 +129,6 @@ func main() {
 			removePackage(filePath, pkg)
 
 			generateInputs(filePath)
-			fmt.Println("Done")
 		},
 	}
 
@@ -151,16 +143,16 @@ func main() {
 			}
 			pkgs, err := getPackages(filePath)
 			if err != nil {
-				log.Fatal("Error reading packages:", err)
+				log.Fatal(err)
 			}
 
 			if len(pkgs) == 0 {
-				fmt.Println("No packages found.")
+				log.Println("No packages found")
 			} else {
-				fmt.Println("Packages in", filePath)
-			}
-			for _, p := range pkgs {
-				fmt.Println("- " + p)
+				log.Println("Packages:")
+				for _, p := range pkgs {
+					log.Printf(" - %s", p)
+				}
 			}
 		},
 	}
@@ -171,7 +163,6 @@ func main() {
 		Short: "Apply changes from .flk to flake.nix",
 		Run: func(cmd *cobra.Command, args []string) {
 			// gets current working directory
-			fmt.Println("Applying changes from .flk to flake.nix...")
 			wd, err := os.Getwd()
 			if err != nil {
 				log.Fatal(err)
@@ -180,7 +171,7 @@ func main() {
 				log.Fatal(err)
 			}
 			if err := applyToFlake(wd); err != nil {
-				log.Fatal("Couldn't apply to flake:", err)
+				log.Fatal(err)
 			}
 
 		},
@@ -223,11 +214,11 @@ func resolveFile(flag string) (string, error) {
 
 // function that makes a .flk folder and extracts shellHook from the provided flake file
 func generateFlk(flakePath string) error {
-	// read shellHook from the flake file first. If there's no shellHook or
-	// extraction fails, don't create any .flk artifacts.
-	shellHookLines, err := getLinesBetween(flakePath, "shellHook = ''", "'';")
-	if err != nil {
-		// no shellHook found or extraction error — do not create files
+	shellHookLines, shErr := getLinesBetween(flakePath, "shellHook = ''", "'';")
+
+	pkgs, pkErr := getPackages(flakePath)
+
+	if shErr != nil && (pkErr != nil || len(pkgs) == 0) {
 		return nil
 	}
 
@@ -235,20 +226,87 @@ func generateFlk(flakePath string) error {
 	if err := os.MkdirAll(".flk", 0755); err != nil {
 		return fmt.Errorf("could not create .flk folder: %w", err)
 	}
-
-	// create/overwrite "shellhook.sh" file
-	outf, err := os.Create(".flk/shellhook.sh")
-	if err != nil {
-		return fmt.Errorf("could not create .flk/shellhook.sh: %w", err)
+	// ensure .flk/devenv exists
+	if err := os.MkdirAll(".flk/devenv", 0755); err != nil {
+		return fmt.Errorf("could not create .flk/devenv folder: %w", err)
 	}
-	defer outf.Close()
 
-	// Write shell hook lines to .flk/shellhook.sh
-	for _, line := range shellHookLines {
-		if _, err := outf.WriteString(line + "\n"); err != nil {
-			return fmt.Errorf("could not write to .flk/shellhook.sh: %w", err)
+	// If shellHook was found, write it out
+	if shErr == nil {
+		outf, err := os.Create(".flk/devenv/shellhook.sh")
+		if err != nil {
+			return fmt.Errorf("could not create .flk/devenv/shellhook.sh: %w", err)
+		}
+		defer outf.Close()
+
+		for _, line := range shellHookLines {
+			if _, err := outf.WriteString(line + "\n"); err != nil {
+				return fmt.Errorf("could not write to .flk/devenv/shellhook.sh: %w", err)
+			}
 		}
 	}
+
+	// make .flk/derivation
+	if err := os.MkdirAll(".flk/derivation", 0755); err != nil {
+		return fmt.Errorf("could not create .flk/derivation folder: %w", err)
+	}
+
+	// Write a YAML file with pname, version, src, and packages fields
+	yf, err := os.Create(".flk/derivation/package.yml")
+	if err != nil {
+		return fmt.Errorf("could not create .flk/derivation/package.yml: %w", err)
+	}
+	defer yf.Close()
+
+	pname := "default"
+	version := "0.1"
+	src := "./."
+
+	if _, err := yf.WriteString(fmt.Sprintf("pname: %s\nversion: %s\nsrc: %s\npackages:\n", pname, version, src)); err != nil {
+		return fmt.Errorf("could not write to .flk/derivation/package.yml: %w", err)
+	}
+	if pkErr == nil && len(pkgs) > 0 {
+		for _, p := range pkgs {
+			if _, err := yf.WriteString("  - " + p + "\n"); err != nil {
+				return fmt.Errorf("could not write to .flk/package.yml: %w", err)
+			}
+		}
+	}
+
+	// Ensure mkDerivation block exists
+	if err := ensureDerivation(flakePath); err != nil {
+		return fmt.Errorf("could not ensure derivation in %s: %w", flakePath, err)
+	}
+
+	// Make a build.sh in /derivation
+	bf, err := os.Create(".flk/derivation/build.sh")
+	if err != nil {
+		return fmt.Errorf("could not create .flk/derivation/build.sh: %w", err)
+	}
+	defer bf.Close()
+	if err := applyBuildPhaseScript(bf.Name()); err != nil {
+		return fmt.Errorf("could not apply build phase script: %w", err)
+	}
+
+	// Make an install.sh in /derivation
+	instf, err := os.Create(".flk/derivation/install.sh")
+	if err != nil {
+		return fmt.Errorf("could not create .flk/derivation/install.sh: %w", err)
+	}
+	defer instf.Close()
+
+	// Write default install.sh content
+	defaultInstallContent := `
+
+	`
+	if _, err := instf.WriteString(defaultInstallContent); err != nil {
+		return fmt.Errorf("could not write to .flk/derivation/install.sh: %w", err)
+	}
+
+	if err := applyInstallPhaseScript(instf.Name()); err != nil {
+		return fmt.Errorf("could not apply install phase script: %w", err)
+	}
+
 	return nil
 }
 
@@ -291,7 +349,6 @@ func getLinesBetween(filePath, start, end string) ([]string, error) {
 				}
 				return lines, nil
 			}
-			// append trimmed non-empty lines
 			if t != "" {
 				lines = append(lines, t)
 			}

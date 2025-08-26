@@ -7,7 +7,34 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
+
+func getPackagesFromPackageYML() ([]string, error) {
+	ymlPath := ".flk/derivation/package.yml"
+	f, err := os.Open(ymlPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	type pkgFile struct {
+		Packages []string `yaml:"packages"`
+	}
+	var pf pkgFile
+
+	dec := yaml.NewDecoder(f)
+	if err := dec.Decode(&pf); err != nil {
+		return nil, err
+	}
+
+	var pkgs []string
+	for _, p := range pf.Packages {
+		pkgs = append(pkgs, "pkgs."+p)
+	}
+	return pkgs, nil
+}
 
 func getPackages(filePath string) ([]string, error) {
 	file, err := os.Open(filePath)
@@ -55,16 +82,16 @@ func addPackage(filePath, pkg string) error {
 		return fmt.Errorf("could not read file: %w", err)
 	}
 
-	// gets the variable under let
+	// get let variable
 	variables, err := getVariables(filePath)
 	if err != nil {
 		return fmt.Errorf("could not get variables from file: %w", err)
 	}
 
-	// searches for pkgs prefix
+	// search pkgs prefix
 	prefixFound := false
 	for _, v := range variables {
-		// Check if pkgs variable is already defined
+		// pkgs defined?
 		if strings.HasPrefix(v, "pkgs") {
 			prefixFound = true
 			break
@@ -72,7 +99,7 @@ func addPackage(filePath, pkg string) error {
 	}
 
 	if !prefixFound {
-		// Insert pkgs variable if missing
+		// insert pkgs if missing
 		if err := insertVariable(filePath, "pkgs", "import nixpkgs { inherit system; }"); err != nil {
 			return err
 		}
@@ -84,14 +111,13 @@ func addPackage(filePath, pkg string) error {
 
 	lines := strings.Split(string(input), "\n")
 	var (
-		inBlock         = false
 		alreadyPresent  = false
-		blockStartIndex = -1 // index of [
-		blockEndIndex   = -1 // index of ]
+		blockStartIndex = -1
+		blockEndIndex   = -1
 		indent          = ""
 	)
 
-	// adds the prefix
+	// add prefix
 	fullPkgName := "pkgs." + pkg
 	// Find the packages block and check if package is already present
 	for i, line := range lines {
@@ -102,13 +128,12 @@ func addPackage(filePath, pkg string) error {
 		}
 
 		if strings.Contains(trim, "packages = [") {
-			inBlock = true // start block
 			blockStartIndex = i
 			indent = getLineIndentation(line) + "  "
 			continue
 		}
 
-		if inBlock && strings.Contains(trim, "]") {
+		if blockStartIndex != -1 && strings.Contains(trim, "]") {
 			blockEndIndex = i // end block
 			break
 		}
@@ -269,4 +294,34 @@ func insertVariable(filePath, varName, varValue string) error {
 	}
 
 	return nil
+}
+
+// updates a field in the defaultPackage block of flake.nix
+func updateFieldInDefaultPackage(flake, field, value string) string {
+	// Find defaultPackage = pkgs.stdenv.mkDerivation {
+	blockStart := strings.Index(flake, "defaultPackage = pkgs.stdenv.mkDerivation {")
+	if blockStart == -1 {
+		return flake
+	}
+	// Find the end of the block
+	blockEnd := strings.Index(flake[blockStart:], "};")
+	if blockEnd == -1 {
+		return flake
+	}
+	blockEnd += blockStart
+	block := flake[blockStart:blockEnd]
+
+	// Find the field line
+	fieldStart := strings.Index(block, field+" = ")
+	if fieldStart == -1 {
+		return flake
+	}
+	fieldEnd := strings.Index(block[fieldStart:], ";")
+	if fieldEnd == -1 {
+		return flake
+	}
+	fieldEnd += fieldStart
+	// Replace the value
+	newBlock := block[:fieldStart+len(field+" = ")] + value + block[fieldEnd:]
+	return flake[:blockStart] + newBlock + flake[blockEnd:]
 }

@@ -25,21 +25,21 @@ func generateInputs(filePath string) {
 		trim := strings.TrimSpace(line)
 		condensed := strings.Join(strings.Fields(trim), "")
 
-		// If we are inside an inputs block, parse it
+		// parse inputs block
 		if skipBlock {
-			// Check for the end of the block
+			// end of block?
 			if condensed == "};" {
 				skipBlock = false
 				continue
 			}
-			// If not the end, it's a line with an input to preserve
+			// preserve input line
 			if trim != "" {
 				extraInputs = append(extraInputs, trim)
 			}
 			continue
 		}
 
-		// Look for the start of an inputs block
+		// start of inputs block
 		if strings.HasPrefix(condensed, "inputs={") {
 			skipBlock = true
 			if strings.HasSuffix(condensed, "};") {
@@ -56,21 +56,21 @@ func generateInputs(filePath string) {
 			continue
 		}
 
-		// If none of the above, it's a regular line
+		// regular line
 		newLines = append(newLines, line)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Fatal(err)
 	}
 
-	// Build the standard block
+	// build block
 	inputBlock := []string{
 		"  inputs = {",
 		`    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`,
 		`    flake-utils.url = "github:numtide/flake-utils";`,
 	}
 
-	// Anti-duplicate stuff
+	// anti-duplicate
 	for _, inp := range extraInputs {
 		trimmedInp := strings.TrimSpace(inp)
 		if strings.HasPrefix(trimmedInp, "nixpkgs.") || strings.HasPrefix(trimmedInp, "flake-utils.") {

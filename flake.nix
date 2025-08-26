@@ -21,7 +21,9 @@
               alias run='mkdir -p build && cd build && go build -o flk .. && ./flk; cd ..'
               alias flk='./../build/flk'
               alias test='cd "$(git rev-parse --show-toplevel)" && build && cd test'
+              alias remove="rm flake.nix && rm -r .flk"
               echo "Development environment loaded"
+              
             '';
           };
         };
